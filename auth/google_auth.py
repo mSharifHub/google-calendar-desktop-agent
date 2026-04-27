@@ -4,10 +4,14 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-SCOPES = ['https://www.googleapis.com/auth/calendar']
+
+SCOPES = [
+    'https://www.googleapis.com/auth/calendar',
+    'https://mail.google.com/'
+]
 
 
-def authenticate_google_calendar():
+def get_google_creds():
     """Handles OAuth2 authentication with Google Calendar and returns a service client."""
     creds = None
 
@@ -23,4 +27,14 @@ def authenticate_google_calendar():
         with open('token.json', 'w') as token:
             token.write(creds.to_json())
 
-    return build('calendar', 'v3', credentials=creds)
+    return creds
+
+
+def get_service(api: str, version: str):
+    """Returns an authenticated Google API service client.
+
+    Examples:
+        get_service('calendar', 'v3')
+        get_service('gmail', 'v1')
+    """
+    return build(api, version, credentials=get_google_creds())

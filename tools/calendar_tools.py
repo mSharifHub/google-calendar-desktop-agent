@@ -1,6 +1,8 @@
 import datetime
+import base64
+from email.message import EmailMessage
 from langchain_core.tools import tool
-from auth.google_auth import authenticate_google_calendar
+from auth.google_auth import get_service
 
 
 @tool
@@ -12,7 +14,7 @@ def create_event(summary: str, start_time: str, end_time: str, description: str 
     location: optional physical or virtual location.
     url: optional link to attach to the event (added to description).
     """
-    service = authenticate_google_calendar()
+    service = get_service('calendar', 'v3')
 
     full_description = description or ''
     if url:
@@ -36,11 +38,10 @@ def create_event(summary: str, start_time: str, end_time: str, description: str 
         return f"Error creating event: {e}"
 
 
-
 @tool
 def get_upcoming_events(max_results: int = 10) -> str:
     """Get the user's upcoming Google Calendar events. Returns the event name and start time."""
-    service = authenticate_google_calendar()
+    service = get_service('calendar', 'v3')
     now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', '') + 'Z'
 
     events_result = service.events().list(
@@ -55,16 +56,41 @@ def get_upcoming_events(max_results: int = 10) -> str:
     for event in events:
         start = event['start'].get('dateTime', event['start'].get('date'))
         summary = event.get('summary', 'No title')
-        event_list.append(f"{summary} — {start}")
+        event_id = event.get('id')
+        event_list.append(f"- [ID: {event_id}] {summary} at {start}")
 
     return '\n'.join(event_list) or 'No upcoming events found.'
 
 
+@tool
+def edit_event(event_id: str, new_summary: str = None, new_start_time: str = None, new_end_time: str = None, new_description: str = None, new_location: str = None) -> str:
+    """
+    Edit an existing Google Calendar event by its ID.
+    Only the provided fields will be updated; omitted fields remain unchanged.
+    new_start_time and new_end_time must be ISO 8601 strings (e.g. '2026-04-28T14:30:00').
+    """
+    service = get_service('calendar', 'v3')
+
+    try:
+        event = service.events().get(calendarId='primary', eventId=event_id).execute()
+    except Exception as e:
+        return f"Error fetching event: {e}"
+
+    if new_summary is not None:
+        event['summary'] = new_summary
+    if new_description is not None:
+        event['description'] = new_description
+    if new_location is not None:
+        event['location'] = new_location
+    if new_start_time is not None:
+        event['start'] = {'dateTime': new_start_time, 'timeZone': 'America/Los_Angeles'}
+    if new_end_time is not None:
+        event['end'] = {'dateTime': new_end_time, 'timeZone': 'America/Los_Angeles'}
+
+    try:
+        updated = service.events().update(calendarId='primary', eventId=event_id, body=event).execute()
+        return f"Event updated successfully: {updated.get('summary')}. Link: {updated.get('htmlLink')}"
+    except Exception as e:
+        return f"Error updating event: {e}"
 
 
-
-
-
-
-
-tools = [create_event,get_upcoming_events]

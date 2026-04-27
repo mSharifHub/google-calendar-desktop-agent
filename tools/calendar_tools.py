@@ -1,5 +1,4 @@
 import datetime
-import base64
 from email.message import EmailMessage
 from langchain_core.tools import tool
 from auth.google_auth import get_service

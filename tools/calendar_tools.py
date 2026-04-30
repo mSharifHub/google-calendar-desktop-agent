@@ -62,6 +62,32 @@ def get_upcoming_events(max_results: int = 10) -> str:
 
 
 @tool
+def get_todays_events() -> str:
+    """Get the user's Google Calendar events for today only (midnight to midnight local time)."""
+    service = get_service('calendar', 'v3')
+    local_tz = datetime.timezone(datetime.timedelta(hours=-7))  # America/Los_Angeles (PDT)
+    today = datetime.datetime.now(local_tz).date()
+    time_min = datetime.datetime(today.year, today.month, today.day, 0, 0, 0, tzinfo=local_tz).isoformat()
+    time_max = datetime.datetime(today.year, today.month, today.day, 23, 59, 59, tzinfo=local_tz).isoformat()
+
+    events_result = service.events().list(
+        calendarId='primary', timeMin=time_min, timeMax=time_max,
+        maxResults=20, singleEvents=True,
+        orderBy='startTime').execute()
+
+    events = events_result.get('items', [])
+
+    event_list = []
+    for event in events:
+        start = event['start'].get('dateTime', event['start'].get('date'))
+        summary = event.get('summary', 'No title')
+        event_id = event.get('id')
+        event_list.append(f"- [ID: {event_id}] {summary} at {start}")
+
+    return '\n'.join(event_list) or f'No events found for today ({today}).'
+
+
+@tool
 def edit_event(event_id: str, new_summary: str = None, new_start_time: str = None, new_end_time: str = None, new_description: str = None, new_location: str = None) -> str:
     """
     Edit an existing Google Calendar event by its ID.

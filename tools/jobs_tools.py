@@ -1,49 +1,52 @@
 import re
+import datetime
 from langchain_core.tools import tool
 from auth.google_auth import get_service
 from utils.file_store import load_job_tracker, save_job_tracker
 
+# Enhanced keyword sets
+INTERVIEW_KEYWORDS = ["interview", "phone screen", "technical screen", "schedule", "availability", "coderpad",
+                      "hackerrank", "take-home", "onsite", "invite", "zoom meeting schedule", "coding assessment"]
+REJECTION_KEYWORDS = ["unfortunately", "not moving forward", "other candidates", "we regret", "not selected",
+                      "decided not", "position has been filled", "pursue other", "chose other candidates"]
+OFFER_KEYWORDS = ["offer letter", "job offer", "pleased to offer", "start date",
+                  "compensation package"]
 
-INTERVIEW_KEYWORDS  = ["interview", "phone screen", "technical screen", "schedule", "availability", "coderpad", "hackerrank", "take-home", "onsite"]
-REJECTION_KEYWORDS  = ["unfortunately", "not moving forward", "other candidates", "we regret", "not selected", "decided not", "position has been filled"]
-OFFER_KEYWORDS      = ["offer letter", "job offer", "pleased to offer", "background check", "start date", "compensation package"]
+STATUS_RANK = {"Applied": 1, "Interview": 2, "Rejected": 3, "Offer": 4}
 
 
 def _extract_company(sender: str, subject: str) -> str | None:
     """Extract company name from sender domain or subject line."""
+    # Try domain extraction first
     domain_match = re.search(r'@([\w.-]+)\.', sender)
-    if not domain_match:
-        return None
-    domain_parts = domain_match.group(1).lower().split('.')
-    company = domain_parts[-1] if len(domain_parts) > 1 else domain_parts[0]
-    return company.capitalize()
+    if domain_match:
+        domain = domain_match.group(1).lower()
+        # Filter out common ATS providers to get the actual company
+        ats_providers = ['greenhouse', 'lever', 'workday', 'myworkday', 'ashbyhq', 'smartrecruiters']
+        parts = domain.split('.')
+        for part in parts:
+            if part not in ats_providers:
+                return part.capitalize()
+    return None
 
 
-def _determine_status(subject: str, snippet: str) -> str:
-    combined = subject + " " + snippet
-    if any(kw in combined for kw in OFFER_KEYWORDS):
-        return "Offer"
-    if any(kw in combined for kw in REJECTION_KEYWORDS):
-        return "Rejected"
-    if any(kw in combined for kw in INTERVIEW_KEYWORDS):
-        return "Interview"
+def _determine_status(text: str) -> str:
+    text = text.lower()
+    if any(kw in text for kw in OFFER_KEYWORDS): return "Offer"
+    if any(kw in text for kw in REJECTION_KEYWORDS): return "Rejected"
+    if any(kw in text for kw in INTERVIEW_KEYWORDS): return "Interview"
     return "Applied"
 
 
 @tool
 def scan_job_emails(max_results: int = 50) -> str:
     """
-    Scans the user's Gmail for job application updates, interviews, and rejections,
-    and updates the local job tracker database automatically.
+    Scans Gmail for job updates, parses the full body for status, and records the application date.
     """
     service = get_service('gmail', 'v1')
 
-    query = (
-        'subject:("application received" OR "thank you for applying" OR "your application" OR '
-        '"we received your application" OR "interview" OR "phone screen" OR "technical screen" OR '
-        '"we regret" OR "not moving forward" OR "unfortunately" OR "offer letter" OR "job offer") '
-        'newer_than:90d'
-    )
+    # Broad query to ensure we catch all relevant threads
+    query = '("application" OR "interview" OR "opportunity") newer_than:90d'
 
     try:
         results = service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
@@ -56,52 +59,75 @@ def scan_job_emails(max_results: int = 50) -> str:
         updates_made = 0
 
         for msg in messages:
-            msg_data = service.users().messages().get(
-                userId='me', id=msg['id'], format='metadata',
-                metadataHeaders=['Subject', 'From']
-            ).execute()
+            # We fetch 'full' format here to get the full body if snippet isn't enough
+            msg_data = service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
 
             headers = msg_data.get('payload', {}).get('headers', [])
             subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '')
-            sender  = next((h['value'] for h in headers if h['name'] == 'From'), '').lower()
+            sender = next((h['value'] for h in headers if h['name'] == 'From'), '').lower()
+            date_raw = next((h['value'] for h in headers if h['name'] == 'Date'), '')
+
+            # Simple date parsing
+            try:
+                date_obj = datetime.datetime.strptime(date_raw.split(', ')[-1][:11], '%d %b %Y')
+                date_str = date_obj.strftime('%Y-%m-%d')
+            except:
+                date_str = "Unknown"
+
             snippet = msg_data.get('snippet', '')
+            # Get full text body if available
+            body = ""
+            payload = msg_data.get('payload', {})
+            if 'parts' in payload:
+                for part in payload['parts']:
+                    if part['mimeType'] == 'text/plain':
+                        import base64
+                        body = base64.urlsafe_b64decode(part['body'].get('data', '')).decode('utf-8', 'ignore')
 
             company = _extract_company(sender, subject)
-            if not company:
-                continue
+            if not company: continue
 
-            status = _determine_status(subject.lower(), snippet.lower())
+            # Analyze status using snippet + full body
+            status = _determine_status(subject + " " + snippet + " " + body)
 
-            tracker["applications"][company] = {"status": status}
-            updates_made += 1
+            # Logic: Only update if the new status is a higher "rank" or if it's a new company
+            current = tracker["applications"].get(company, {})
+            current_status = current.get("status", "Applied")
+
+            if company not in tracker["applications"] or STATUS_RANK.get(status, 0) >= STATUS_RANK.get(current_status,
+                                                                                                       0):
+                tracker["applications"][company] = {
+                    "status": status,
+                    "date_updated": date_str
+                }
+                updates_made += 1
 
         save_job_tracker(tracker)
-        return f"Job tracker synced! {updates_made} updates across {len(tracker['applications'])} companies."
+        return f"Job tracker synced! {updates_made} updates made. Database now has {len(tracker['applications'])} companies."
 
     except Exception as e:
         return f"Error scanning job emails: {str(e)}"
 
 
 @tool
-def view_job_tracker(status_filter: str = "all") -> str:
+def get_job_applications(company: str = "") -> str:
     """
-    Retrieves the user's job application tracker.
-    Pass a status_filter (e.g., 'Rejected', 'Interview', 'Applied', 'all') to see specific jobs.
+    Returns job application statuses from the local tracker.
+    Optionally filter by company name. Leave company empty to get all applications.
     """
     tracker = load_job_tracker()
-    apps = tracker.get("applications", {})
+    applications = tracker.get("applications", {})
 
-    if not apps:
-        return "Your job tracker is currently empty. Run scan_job_emails first."
+    if not applications:
+        return "No job applications found in tracker. Try running scan_job_emails first to sync from Gmail."
 
-    filtered_apps = []
-    for company, data in apps.items():
-        status = data.get("status", "Unknown")
-        if status_filter.lower() == "all" or status.lower() == status_filter.lower():
-            filtered_apps.append(f"- {company}: {status}")
+    if company:
+        key = next((k for k in applications if company.lower() in k.lower()), None)
+        if not key:
+            return f"No application found for '{company}' in the tracker."
+        data = applications[key]
+        return f"{key}: Status={data.get('status', 'Unknown')}, Last Updated={data.get('date_updated', 'Unknown')}"
 
-    if not filtered_apps:
-        return f"No applications found with status: {status_filter}."
-
-    header = f"Job Applications ({status_filter}) — {len(filtered_apps)} total:\n"
-    return header + "\n".join(filtered_apps)
+    lines = [f"- {name}: Status={info.get('status', 'Unknown')}, Last Updated={info.get('date_updated', 'Unknown')}"
+             for name, info in applications.items()]
+    return "Job Applications:\n" + "\n".join(lines)

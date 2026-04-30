@@ -12,7 +12,7 @@ def main():
                 print("Goodbye!")
                 break
 
-            print("\nAgent: ", end="", flush=True)
+            print("\n ", end="", flush=True)
 
             stream = agent.stream(
                 {"messages": [HumanMessage(content=user_input)]},

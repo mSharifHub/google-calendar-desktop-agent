@@ -8,7 +8,7 @@ from typing import Optional
 import requests as http_requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -21,9 +21,17 @@ def _ollama_model_exists(model_name: str) -> bool:
         res = http_requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
         models = res.json().get("models", [])
         local_names = {m["name"] for m in models}
-        # Ollama stores names as "name:tag"; normalise by adding :latest if no tag
+
+        # 1. Exact match
+        if model_name in local_names:
+            return True
+        # 2. Normalise: add :latest if the user omitted the tag
         needle = model_name if ":" in model_name else f"{model_name}:latest"
-        return needle in local_names
+        if needle in local_names:
+            return True
+        # 3. Base-name match: "llama3.1" matches "llama3.1:8b-instruct-q4_K_M"
+        base = model_name.split(":")[0]
+        return any(n.split(":")[0] == base for n in local_names)
     except Exception:
         return False
 
@@ -34,7 +42,8 @@ class Backend(str, Enum):
     openai = "openai"
     gemini = "gemini"
 
-# Session store: session_id -> {"agent": ..., "config": ..., "model_info": ...}
+
+# Session store: session_id -> {\"agent\": ..., \"config\": ..., \"model_info\": ...}
 _sessions: dict[str, dict] = {}
 
 
@@ -88,11 +97,32 @@ class ChatRequest(BaseModel):
     session_id: str
 
 
+class PullRequest(BaseModel):
+    model: str
+
+
+# ---------- Calendar provider request models ----------
+
+class OutlookSetupRequest(BaseModel):
+    client_id: str
+    client_secret: str
+    tenant_id: Optional[str] = "common"
+
+
+class AppleConnectRequest(BaseModel):
+    username: str
+    app_password: str
+
+
+class CalendlyConnectRequest(BaseModel):
+    token: str
+
+
 # Cache user info so we don't call Google on every request
 _user_info: dict = {}
 
 
-# ---------- Endpoints ----------
+# ---------- Existing endpoints ----------
 
 @app.get("/user")
 def user():
@@ -110,10 +140,6 @@ def user():
         "email":      _user_info.get("email", ""),
         "picture":    _user_info.get("picture", ""),
     }
-
-
-class PullRequest(BaseModel):
-    model: str
 
 
 @app.post("/ollama/pull")
@@ -211,6 +237,237 @@ async def chat(req: ChatRequest):
         yield response
 
     return StreamingResponse(generate(), media_type="text/plain")
+
+
+# ---------- Calendar provider endpoints ----------
+
+@app.get("/calendars/status")
+def calendars_status():
+    """Return which calendar providers are currently connected."""
+    try:
+        from auth.google_auth import is_connected as google_ok
+        google = google_ok()
+    except Exception:
+        google = False
+    try:
+        from auth.microsoft_auth import is_connected as outlook_ok
+        outlook = outlook_ok()
+    except Exception:
+        outlook = False
+    try:
+        from auth.apple_auth import is_connected as apple_ok
+        apple = apple_ok()
+    except Exception:
+        apple = False
+    try:
+        from auth.calendly_auth import is_connected as calendly_ok
+        calendly = calendly_ok()
+    except Exception:
+        calendly = False
+
+    return {
+        "google": google,
+        "outlook": outlook,
+        "apple": apple,
+        "calendly": calendly,
+    }
+
+
+# --- Google Calendar ---
+
+@app.post("/auth/google/connect")
+async def google_connect():
+    """
+    Trigger the Google OAuth2 flow. Opens a browser on the local machine.
+    Blocks until the user completes sign-in; returns once token.json is saved.
+    """
+    def do_connect():
+        from auth.google_auth import connect
+        connect()
+
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, do_connect)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"status": "ok"}
+
+
+@app.post("/auth/google/disconnect")
+def google_disconnect():
+    from auth.google_auth import disconnect
+    disconnect()
+    return {"status": "ok"}
+
+
+# --- Outlook ---
+
+@app.post("/auth/outlook/setup")
+def outlook_setup(req: OutlookSetupRequest):
+    """
+    Store Azure app credentials and return the OAuth2 authorization URL.
+    The frontend should open this URL so the user can grant calendar access.
+    """
+    try:
+        from auth.microsoft_auth import save_app_credentials, get_auth_url
+        save_app_credentials(req.client_id, req.client_secret, req.tenant_id or "common")
+        auth_url = get_auth_url()
+        return {"auth_url": auth_url}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/auth/outlook/callback")
+def outlook_callback(code: Optional[str] = Query(default=None), error: Optional[str] = Query(default=None)):
+    """
+    Microsoft redirects here after the user grants (or denies) consent.
+    Exchanges the authorization code for tokens and returns a close-tab page.
+    """
+    if error:
+        html = f"""
+        <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+          <h2 style="color:#dc2626">Authentication Failed</h2>
+          <p>{error}</p>
+          <p>You can close this tab.</p>
+        </body></html>
+        """
+        return HTMLResponse(content=html, status_code=400)
+
+    if not code:
+        raise HTTPException(status_code=400, detail="No authorization code received.")
+
+    try:
+        from auth.microsoft_auth import exchange_code
+        exchange_code(code)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    html = """
+    <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+      <h2 style="color:#16a34a">&#10003; Outlook Connected!</h2>
+      <p>Your Microsoft Calendar has been linked successfully.</p>
+      <p style="color:#6b7280">You can close this tab and return to the app.</p>
+      <script>
+        setTimeout(() => window.close(), 2000);
+      </script>
+    </body></html>
+    """
+    return HTMLResponse(content=html)
+
+
+@app.post("/auth/outlook/disconnect")
+def outlook_disconnect():
+    from auth.microsoft_auth import disconnect
+    disconnect()
+    return {"status": "ok"}
+
+
+# --- Apple Calendar ---
+
+@app.post("/auth/apple/connect")
+def apple_connect(req: AppleConnectRequest):
+    """
+    Store Apple ID and app-specific password, then verify the CalDAV connection.
+    Generate an app-specific password at appleid.apple.com → Security → App-Specific Passwords.
+    """
+    from auth.apple_auth import save_credentials, connect_and_verify, disconnect
+    save_credentials(req.username, req.app_password)
+    try:
+        connect_and_verify()
+    except ValueError as e:
+        disconnect()  # Remove invalid credentials
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        disconnect()
+        raise HTTPException(status_code=400, detail=f"Unexpected error: {e}")
+    return {"status": "ok"}
+
+
+@app.post("/auth/apple/disconnect")
+def apple_disconnect():
+    from auth.apple_auth import disconnect
+    disconnect()
+    return {"status": "ok"}
+
+
+# --- Calendly ---
+
+@app.post("/auth/calendly/connect")
+def calendly_connect(req: CalendlyConnectRequest):
+    """
+    Store a Calendly Personal Access Token and verify it.
+    Generate one at: Calendly → Integrations → API & Webhooks → Personal Access Tokens.
+    """
+    try:
+        from auth.calendly_auth import save_token, is_connected
+        save_token(req.token)
+        if not is_connected():
+            from auth.calendly_auth import disconnect
+            disconnect()
+            raise HTTPException(status_code=400, detail="Token verification failed. Check your Calendly Personal Access Token.")
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/auth/calendly/disconnect")
+def calendly_disconnect():
+    from auth.calendly_auth import disconnect
+    disconnect()
+    return {"status": "ok"}
+
+
+# --- Unified calendar actions ---
+
+@app.get("/calendars/sync")
+def calendars_sync(days_ahead: int = Query(default=7)):
+    """Return a merged list of events from all connected providers."""
+    try:
+        from tools.unified_calendar import get_all_events
+        events = get_all_events(days_ahead)
+        return {
+            "days_ahead": days_ahead,
+            "count": len(events),
+            "events": [
+                {
+                    "id": e.id,
+                    "title": e.title,
+                    "start": e.start.isoformat(),
+                    "end": e.end.isoformat(),
+                    "provider": e.provider,
+                    "location": e.location,
+                    "description": e.description,
+                }
+                for e in events
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/calendars/conflicts")
+def calendars_conflicts(days_ahead: int = Query(default=7)):
+    """Return overlapping events across all connected providers."""
+    try:
+        from tools.unified_calendar import get_all_events, find_conflicts
+        events = get_all_events(days_ahead)
+        conflicts = find_conflicts(events)
+        return {
+            "days_ahead": days_ahead,
+            "conflict_count": len(conflicts),
+            "conflicts": [
+                {
+                    "event_a": {"id": a.id, "title": a.title, "start": a.start.isoformat(), "end": a.end.isoformat(), "provider": a.provider},
+                    "event_b": {"id": b.id, "title": b.title, "start": b.start.isoformat(), "end": b.end.isoformat(), "provider": b.provider},
+                }
+                for a, b in conflicts
+            ],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

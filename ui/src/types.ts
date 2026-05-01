@@ -27,3 +27,12 @@ export interface StatusResponse {
   configured: boolean;
   model_info: { backend: string; model_name: string };
 }
+
+export type CalendarProvider = 'google' | 'outlook' | 'apple' | 'calendly';
+
+export interface ProviderStatus {
+  google: boolean;
+  outlook: boolean;
+  apple: boolean;
+  calendly: boolean;
+}

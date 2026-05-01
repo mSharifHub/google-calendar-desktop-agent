@@ -2,15 +2,22 @@ import { useState } from 'react'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { faBars } from '@fortawesome/free-solid-svg-icons'
 import { ChatProvider, useChat } from './context/ChatContext'
+import { CalendarProvider } from './context/CalendarContext'
 import SettingsPanel from './components/SettingsPanel'
 import ChatPanel from './components/ChatPanel'
 import Sidebar from './components/Sidebar'
+import CalendarProviders from './components/CalendarProviders'
 
 function AppContent() {
   const { view, initDone, threads } = useChat()
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   if (!initDone) return null
+
+  // Calendar providers setup screen (first launch or manually navigated)
+  if (view === 'providers') {
+    return <CalendarProviders />
+  }
 
   if (view === 'settings' && threads.length === 0) {
     return <SettingsPanel />
@@ -51,7 +58,9 @@ function AppContent() {
 export default function App() {
   return (
     <ChatProvider>
-      <AppContent />
+      <CalendarProvider>
+        <AppContent />
+      </CalendarProvider>
     </ChatProvider>
   )
 }

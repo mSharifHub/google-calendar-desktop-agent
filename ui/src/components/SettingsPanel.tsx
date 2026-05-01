@@ -10,7 +10,7 @@ const BACKENDS: { value: Backend; label: string; description: string }[] = [
 ]
 
 export default function SettingsPanel() {
-  const { handleConnect: onConnect } = useChat()
+  const { handleConnect: onConnect, setView } = useChat()
   const [backend, setBackend]         = useState<Backend>('claude')
   const [apiKey, setApiKey]           = useState('')
   const [modelName, setModelName]     = useState('')
@@ -53,7 +53,7 @@ export default function SettingsPanel() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Connection failed'
       if (msg.startsWith('MODEL_NOT_FOUND:')) {
-        const name = msg.split(':')[1]
+        const name = msg.slice('MODEL_NOT_FOUND:'.length)  // preserve full tag e.g. llama3.1:latest
         setPullModel(name)   // show download prompt
       } else {
         setError(msg)
@@ -100,6 +100,12 @@ export default function SettingsPanel() {
             Calendar Assistant
           </h1>
           <p className="text-gray-500 text-xl">Connect to your AI model to get started</p>
+          <button
+            onClick={() => setView('providers')}
+            className="mt-4 text-sm text-blue-600 hover:text-blue-800 underline underline-offset-2 cursor-pointer"
+          >
+            ← Manage Calendar Providers
+          </button>
         </div>
 
         <div className="flex flex-col gap-7 w-full">

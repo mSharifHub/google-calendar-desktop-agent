@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, ReactNode } from 'react
 import { AgentConfig, Message, Thread, SERVER_URL } from '../types'
 import { storageGet, storageSet } from '../storage'
 
-export type View = 'settings' | 'chat'
+export type View = 'providers' | 'settings' | 'chat'
 
 interface ChatContextType {
   view: View
@@ -31,7 +31,7 @@ function makeTitle(messages: Message[]): string {
 }
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const [view, setView]               = useState<View>('settings')
+  const [view, setView]               = useState<View>('providers')
   const [threads, setThreads]         = useState<Thread[]>([])
   const [activeThreadId, setActiveId] = useState<string | null>(null)
   const [loading, setLoading]         = useState(false)
@@ -73,8 +73,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           setActiveId(restore)
           setView('chat')
         }
+      } else {
+        // First launch: show providers screen unless user already went through it
+        const providersDone = localStorage.getItem('providersDone')
+        setView(providersDone ? 'settings' : 'providers')
       }
-      // Always try to fetch user info (even on first run with no threads)
+
+      // Always try to fetch user info
       try {
         const userRes = await fetch(`${SERVER_URL}/user`)
         if (userRes.ok) {

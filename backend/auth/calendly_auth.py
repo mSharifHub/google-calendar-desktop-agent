@@ -1,3 +1,9 @@
+"""
+Calendly authentication via Personal Access Token.
+
+Generate a token at: Calendly → Integrations → API & Webhooks → Personal Access Tokens.
+The token is stored as a JSON file on disk.
+"""
 import json
 import os
 from typing import Optional
@@ -7,54 +13,25 @@ CALENDLY_API = "https://api.calendly.com"
 
 
 def save_token(personal_access_token: str):
-    """
-    Persist a Calendly Personal Access Token.
-    Generate one at: Calendly → Integrations → API & Webhooks → Personal Access Tokens.
-    """
-    print(f"[AUTH:calendly] save_token() → saving token (length={len(personal_access_token)})")
+    """Persist a Calendly Personal Access Token to disk."""
     with open(CALENDLY_TOKEN_FILE, "w") as f:
         json.dump({"token": personal_access_token}, f)
-    print("[AUTH:calendly] save_token() → token saved")
 
 
 def get_calendly_token() -> Optional[str]:
-    print("[AUTH:calendly] get_calendly_token() called")
+    """Return the stored token, or None if not saved."""
     if not os.path.exists(CALENDLY_TOKEN_FILE):
-        print("[AUTH:calendly] get_calendly_token() → None (no token file)")
         return None
     with open(CALENDLY_TOKEN_FILE) as f:
-        data = json.load(f)
-    token = data.get("token")
-    print(f"[AUTH:calendly] get_calendly_token() → {'token found' if token else 'token missing in file'}")
-    return token
+        return json.load(f).get("token")
 
 
 def is_connected() -> bool:
-    print("[AUTH:calendly] is_connected() called")
-    token = get_calendly_token()
-    if not token:
-        print("[AUTH:calendly] is_connected() → False (no token)")
-        return False
-    try:
-        import requests as http_requests
-        print("[AUTH:calendly] is_connected() → verifying token against /users/me")
-        resp = http_requests.get(
-            f"{CALENDLY_API}/users/me",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=5,
-        )
-        result = resp.status_code == 200
-        print(f"[AUTH:calendly] is_connected() → HTTP {resp.status_code} → {result}")
-        return result
-    except Exception as e:
-        print(f"[AUTH:calendly] is_connected() → False (error: {e})")
-        return False
+    """Return True if a Calendly token file exists."""
+    return os.path.exists(CALENDLY_TOKEN_FILE)
 
 
 def disconnect():
-    print("[AUTH:calendly] disconnect() called")
+    """Remove the saved token."""
     if os.path.exists(CALENDLY_TOKEN_FILE):
         os.remove(CALENDLY_TOKEN_FILE)
-        print("[AUTH:calendly] disconnect() → token file removed")
-    else:
-        print("[AUTH:calendly] disconnect() → token file not found, nothing to remove")

@@ -3,10 +3,13 @@ import uuid
 import icalendar
 import logging
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from auth.apple_auth import get_apple_client, is_connected
 from tools.unified_event import UnifiedEvent, _to_utc
 from utils.retry import with_retry
+
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +100,12 @@ def create_apple_event(
         event.add("summary", summary)
         event.add("uid", str(uuid.uuid4()))
 
-        # Enforce UTC timezone awareness for Apple servers
+        # Treat naive datetimes as local (Pacific) time, not UTC.
+        # The agent always passes local times, e.g. "8:00 AM" means 8 AM PDT.
         start_dt = datetime.datetime.fromisoformat(start_time)
         end_dt = datetime.datetime.fromisoformat(end_time)
-        if start_dt.tzinfo is None: start_dt = start_dt.replace(tzinfo=datetime.timezone.utc)
-        if end_dt.tzinfo is None: end_dt = end_dt.replace(tzinfo=datetime.timezone.utc)
+        if start_dt.tzinfo is None: start_dt = start_dt.replace(tzinfo=LOCAL_TZ)
+        if end_dt.tzinfo is None: end_dt = end_dt.replace(tzinfo=LOCAL_TZ)
 
         event.add("dtstart", icalendar.vDatetime(start_dt))
         event.add("dtend", icalendar.vDatetime(end_dt))
@@ -187,10 +191,14 @@ def edit_apple_event(
                                 continue
 
                             if new_summary is not None: component["SUMMARY"] = new_summary
-                            if new_start_time is not None: component["DTSTART"] = icalendar.vDatetime(
-                                datetime.datetime.fromisoformat(new_start_time))
-                            if new_end_time is not None: component["DTEND"] = icalendar.vDatetime(
-                                datetime.datetime.fromisoformat(new_end_time))
+                            if new_start_time is not None:
+                                dt = datetime.datetime.fromisoformat(new_start_time)
+                                if dt.tzinfo is None: dt = dt.replace(tzinfo=LOCAL_TZ)
+                                component["DTSTART"] = icalendar.vDatetime(dt)
+                            if new_end_time is not None:
+                                dt = datetime.datetime.fromisoformat(new_end_time)
+                                if dt.tzinfo is None: dt = dt.replace(tzinfo=LOCAL_TZ)
+                                component["DTEND"] = icalendar.vDatetime(dt)
                             if new_description is not None: component["DESCRIPTION"] = new_description
                             if new_location is not None: component["LOCATION"] = new_location
 

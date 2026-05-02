@@ -1,10 +1,13 @@
 import datetime
+import logging
 from typing import Optional
 import requests as http_requests
 
 from auth.microsoft_auth import get_access_token, is_connected
 from tools.unified_event import UnifiedEvent, _to_utc, _parse_dt
 from utils.retry import with_retry
+
+logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 LOCAL_TZ = "America/Los_Angeles"
@@ -18,6 +21,7 @@ def _headers() -> dict:
 
 def fetch_outlook_events(days: int) -> list[UnifiedEvent]:
     if not is_connected(): return []
+    logger.info(f"Fetching Outlook events for next {days} days")
     now = datetime.datetime.now(datetime.timezone.utc)
     end = now + datetime.timedelta(days=days)
 
@@ -37,9 +41,11 @@ def fetch_outlook_events(days: int) -> list[UnifiedEvent]:
         )
         resp.raise_for_status()
         events = resp.json().get("value", [])
-    except Exception:
+    except Exception as e:
+        logger.error(f"fetch_outlook_events failed: {e}")
         return []
 
+    logger.debug(f"Outlook returned {len(events)} events")
     out = []
     for e in events:
         out.append(UnifiedEvent(
@@ -61,6 +67,7 @@ def create_outlook_event(
         description: Optional[str] = None,
         location: Optional[str] = None,
 ) -> str:
+    logger.info(f"Creating Outlook event: '{summary}' from {start_time} to {end_time}")
     if not is_connected(): return "Auth Error: Outlook not connected."
     body: dict = {
         "subject": summary,
@@ -75,8 +82,10 @@ def create_outlook_event(
 
 
 def delete_outlook_event(event_id: str) -> str:
+    logger.info(f"Deleting Outlook event: {event_id}")
     if not is_connected(): return "Auth Error: Outlook not connected."
     _retry(http_requests.delete, f"{GRAPH_BASE}/me/events/{event_id}", headers=_headers(), timeout=15)
+    logger.info(f"Outlook event deleted: {event_id}")
     return f"Outlook event deleted successfully (ID: {event_id})."
 
 
@@ -88,6 +97,7 @@ def edit_outlook_event(
         new_description: Optional[str] = None,
         new_location: Optional[str] = None,
 ) -> str:
+    logger.info(f"Editing Outlook event: {event_id}")
     if not is_connected(): return "Auth Error: Outlook not connected."
     patch: dict = {}
     if new_summary is not None: patch["subject"] = new_summary
@@ -96,5 +106,7 @@ def edit_outlook_event(
     if new_description is not None: patch["body"] = {"contentType": "text", "content": new_description}
     if new_location is not None: patch["location"] = {"displayName": new_location}
 
+    logger.debug(f"Outlook patch fields: {list(patch.keys())}")
     _retry(http_requests.patch, f"{GRAPH_BASE}/me/events/{event_id}", headers=_headers(), json=patch, timeout=15)
+    logger.info(f"Outlook event updated: {event_id}")
     return "Outlook event updated successfully."

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import subprocess
 import uuid
 from enum import Enum
@@ -11,6 +12,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 from pydantic import BaseModel
 
 from agent.agent import build_agent
+
+logger = logging.getLogger(__name__)
 
 
 class Backend(str, Enum):
@@ -106,6 +109,7 @@ def list_sessions():
 def close_session(session_id: str):
     if session_id in _sessions:
         del _sessions[session_id]
+        logger.info(f"Session closed: {session_id}")
         return {"status": "ok", "message": "Session closed."}
     raise HTTPException(status_code=404, detail="Session not found.")
 
@@ -121,12 +125,12 @@ def status(session_id: str):
 
 @router.post("/configure")
 def configure(req: ConfigureRequest):
+    logger.info(f"POST /configure — backend={req.backend.value}, model={req.model_name or '(default)'}")
     try:
         model = _build_model(req.backend, req.api_key or "", req.model_name or "")
     except Exception as e:
+        logger.error(f"configure: failed to build model: {e}")
         raise HTTPException(status_code=400, detail=str(e))
-
-    # FIXED: Corrected import path. It's just `agent`, not `agent.agent`.
 
     agent, config = build_agent(model)
 
@@ -136,6 +140,7 @@ def configure(req: ConfigureRequest):
     }
     session_id = str(uuid.uuid4())
     _sessions[session_id] = {"agent": agent, "config": config, "model_info": model_info}
+    logger.info(f"Session created: {session_id} ({model_info['backend']}/{model_info['model_name']})")
 
     return {"status": "ok", "session_id": session_id, "model_info": model_info}
 
@@ -144,8 +149,10 @@ def configure(req: ConfigureRequest):
 async def chat(req: ChatRequest):
     session = _sessions.get(req.session_id)
     if session is None:
+        logger.warning(f"POST /chat — session not found: {req.session_id}")
         raise HTTPException(status_code=400, detail="Session not found. Call /configure first.")
 
+    logger.debug(f"POST /chat — session={req.session_id}, message={req.message[:80]!r}")
     agent = session["agent"]
     config = session["config"]
 

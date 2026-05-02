@@ -8,12 +8,15 @@ Flow:
   4. get_access_token() returns a valid token, auto-refreshing when needed.
 """
 import json
+import logging
 import os
 import time
 from typing import Optional
 from urllib.parse import urlencode
 
 import requests as http_requests
+
+logger = logging.getLogger(__name__)
 
 OUTLOOK_CREDS_FILE = "outlook_credentials.json"
 OUTLOOK_TOKEN_FILE = "outlook_token.json"
@@ -46,6 +49,7 @@ def save_app_credentials(client_id: str, client_secret: str, tenant_id: str = "c
     """Persist Azure app registration credentials to disk."""
     with open(OUTLOOK_CREDS_FILE, "w") as f:
         json.dump({"client_id": client_id, "client_secret": client_secret, "tenant_id": tenant_id}, f)
+    logger.info(f"Outlook app credentials saved (client_id={client_id[:8]}..., tenant={tenant_id})")
 
 
 def get_auth_url() -> str:
@@ -66,6 +70,7 @@ def get_auth_url() -> str:
 
 def exchange_code(code: str):
     """Exchange an authorization code for an access/refresh token pair."""
+    logger.info("Exchanging Outlook OAuth2 authorization code for tokens")
     creds = _load_creds()
     if not creds:
         raise ValueError("Outlook app credentials not configured.")
@@ -84,6 +89,7 @@ def exchange_code(code: str):
     )
     resp.raise_for_status()
     _save_token(resp.json())
+    logger.info("Outlook token exchanged and saved successfully")
 
 
 def get_access_token() -> Optional[str]:
@@ -93,6 +99,7 @@ def get_access_token() -> Optional[str]:
     """
     token = _load_token()
     if not token:
+        logger.debug("Outlook get_access_token: no token file")
         return None
 
     # Still valid with a 60-second buffer
@@ -100,8 +107,10 @@ def get_access_token() -> Optional[str]:
         return token.get("access_token")
 
     # Attempt token refresh
+    logger.info("Outlook token near expiry, refreshing...")
     creds = _load_creds()
     if not creds or not token.get("refresh_token"):
+        logger.warning("Outlook token refresh failed: missing credentials or refresh_token")
         return None
 
     tenant = creds.get("tenant_id", "common")
@@ -117,16 +126,19 @@ def get_access_token() -> Optional[str]:
         timeout=15,
     )
     if resp.status_code != 200:
-        print(f"[AUTH:outlook] token refresh failed (HTTP {resp.status_code})")
+        logger.error(f"Outlook token refresh failed (HTTP {resp.status_code}): {resp.text}")
         return None
     new_token = resp.json()
     _save_token(new_token)
+    logger.info("Outlook token refreshed successfully")
     return new_token.get("access_token")
 
 
 def is_connected() -> bool:
     """Return True if an Outlook token file exists."""
-    return os.path.exists(OUTLOOK_TOKEN_FILE)
+    result = os.path.exists(OUTLOOK_TOKEN_FILE)
+    logger.debug(f"Outlook is_connected={result}")
+    return result
 
 
 def disconnect():
@@ -134,3 +146,5 @@ def disconnect():
     for f in [OUTLOOK_CREDS_FILE, OUTLOOK_TOKEN_FILE]:
         if os.path.exists(f):
             os.remove(f)
+            logger.info(f"Removed {f}")
+    logger.info("Outlook disconnected")

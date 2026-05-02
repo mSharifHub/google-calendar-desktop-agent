@@ -95,8 +95,21 @@ def edit_google_event(
     if new_summary is not None: body['summary'] = new_summary
     if new_description is not None: body['description'] = new_description
     if new_location is not None: body['location'] = new_location
-    if new_start_time is not None: body['start']['dateTime'] = new_start_time
-    if new_end_time is not None: body['end']['dateTime'] = new_end_time
+
+    # When only start changes, shift end by the same delta to preserve duration.
+    if new_start_time is not None:
+        old_start = _parse_dt(body['start'].get('dateTime', body['start'].get('date', '')))
+        old_end   = _parse_dt(body['end'].get('dateTime',   body['end'].get('date', '')))
+        duration  = old_end - old_start
+        new_start_dt = _parse_dt(new_start_time)
+        body['start']['dateTime'] = new_start_time
+        body['start'].pop('date', None)
+        if new_end_time is None:
+            body['end']['dateTime'] = (new_start_dt + duration).isoformat()
+            body['end'].pop('date', None)
+    if new_end_time is not None:
+        body['end']['dateTime'] = new_end_time
+        body['end'].pop('date', None)
 
     _retry(service.events().update(calendarId='primary', eventId=event_id, body=body).execute)
     return f"Event updated successfully."

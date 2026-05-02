@@ -1,10 +1,13 @@
 import importlib
 import asyncio
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from auth.google_auth import connect as google_connect_auth, disconnect as google_disconnect_auth
 from auth.microsoft_auth import save_app_credentials, get_auth_url, exchange_code, disconnect as microsoft_disconnect_auth
@@ -59,6 +62,7 @@ def calendars_status():
 
 @router.post("/auth/google/connect")
 async def google_connect():
+    logger.info("POST /auth/google/connect — starting OAuth flow")
     def do_connect():
         google_connect_auth()
 
@@ -66,17 +70,23 @@ async def google_connect():
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, do_connect)
     except Exception as e:
+        logger.error(f"Google connect failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+    logger.info("Google connected successfully")
     return {"status": "ok"}
 
 
 @router.post("/auth/outlook/setup")
 def outlook_setup(req: OutlookSetupRequest):
+    logger.info(f"POST /auth/outlook/setup — client_id={req.client_id[:8]}...")
     try:
         save_app_credentials(req.client_id, req.client_secret, req.tenant_id or "common")
-        return {"auth_url": get_auth_url()}
+        auth_url = get_auth_url()
+        logger.info("Outlook auth URL generated")
+        return {"auth_url": auth_url}
     except Exception as e:
+        logger.error(f"Outlook setup failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -86,6 +96,7 @@ def outlook_callback(
     error: Optional[str] = Query(default=None),
 ):
     if error:
+        logger.warning(f"Outlook OAuth callback received error: {error}")
         return HTMLResponse(
             content=f"""
             <html><body style="font-family:sans-serif;text-align:center;padding:60px">
@@ -100,11 +111,14 @@ def outlook_callback(
     if not code:
         raise HTTPException(status_code=400, detail="No authorization code received.")
 
+    logger.info("Outlook OAuth callback: exchanging code for token")
     try:
         exchange_code(code)
     except Exception as e:
+        logger.error(f"Outlook code exchange failed: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+    logger.info("Outlook connected successfully")
     return HTMLResponse(content="""
     <html><body style="font-family:sans-serif;text-align:center;padding:60px">
       <h2 style="color:#16a34a">&#10003; Outlook Connected!</h2>
@@ -117,12 +131,15 @@ def outlook_callback(
 
 @router.post("/auth/apple/connect")
 def apple_connect(req: AppleConnectRequest):
+    logger.info(f"POST /auth/apple/connect — user={req.username}")
     apple_save_credentials(req.username, req.app_password)
     try:
         apple_connect_and_verify()
     except Exception as e:
+        logger.error(f"Apple connect failed: {e}")
         apple_disconnect_auth()
         raise HTTPException(status_code=400, detail=str(e))
+    logger.info("Apple connected successfully")
     return {"status": "ok"}
 
 
